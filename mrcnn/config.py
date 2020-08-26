@@ -77,7 +77,8 @@ class Config(object):
 
     # Ratios of anchors at each cell (width/height)
     # A value of 1 represents a square anchor, and 0.5 is a wide anchor
-    RPN_ANCHOR_RATIOS = [0.5, 1, 2]
+    RPN_ANCHOR_RATIOS = [{'width-height': 0.5, 'depth-width': 0.5}, {'width-height': 1, 'depth-width': 1},
+                         {'width-height': 2, 'depth-width': 2}]
 
     # Anchor stride
     # If 1 then anchors are created for each cell in the backbone feature map.
@@ -161,8 +162,8 @@ class Config(object):
     MAX_GT_INSTANCES = 100
 
     # Bounding box refinement standard deviation for RPN and final detections.
-    RPN_BBOX_STD_DEV = np.array([0.1, 0.1, 0.2, 0.2])
-    BBOX_STD_DEV = np.array([0.1, 0.1, 0.2, 0.2])
+    RPN_BBOX_STD_DEV = np.array([0.1, 0.1, 0.1, 0.2, 0.2, 0.2])
+    BBOX_STD_DEV = np.array([0.1, 0.1, 0.1, 0.2, 0.2, 0.2])
 
     # Max number of final detections
     DETECTION_MAX_INSTANCES = 100
@@ -217,10 +218,10 @@ class Config(object):
 
         # Input image size
         if self.IMAGE_RESIZE_MODE == "crop":
-            self.IMAGE_SHAPE = np.array([self.IMAGE_MIN_DIM, self.IMAGE_MIN_DIM,
+            self.IMAGE_SHAPE = np.array([self.IMAGE_MIN_DIM, self.IMAGE_MIN_DIM, self.IMAGE_MIN_DIM,
                 self.IMAGE_CHANNEL_COUNT])
         else:
-            self.IMAGE_SHAPE = np.array([self.IMAGE_MAX_DIM, self.IMAGE_MAX_DIM,
+            self.IMAGE_SHAPE = np.array([self.IMAGE_MAX_DIM, self.IMAGE_MAX_DIM, self.IMAGE_MAX_DIM,
                 self.IMAGE_CHANNEL_COUNT])
 
         # Image meta data length

@@ -22,6 +22,8 @@ import urllib.request
 import shutil
 import warnings
 from distutils.version import LooseVersion
+from plyfile import PlyData
+
 
 # URL from which to download the latest COCO trained weights
 COCO_MODEL_URL = "https://github.com/matterport/Mask_RCNN/releases/download/v2.0/mask_rcnn_coco.h5"
@@ -356,13 +358,35 @@ class Dataset(object):
         """Load the specified image and return a [H,W,3] Numpy array.
         """
         # Load image
-        image = skimage.io.imread(self.image_info[image_id]['path'])
-        # If grayscale. Convert to RGB for consistency.
-        if image.ndim != 3:
-            image = skimage.color.gray2rgb(image)
-        # If has an alpha channel, remove it for consistency
-        if image.shape[-1] == 4:
-            image = image[..., :3]
+
+        plydata = PlyData.read(os.path.join(self.image_info[image_id]['path']))
+        vertex = plydata['vertex']
+
+        xs = (vertex['x'] * 100).astype(np.int)
+        ys = (vertex['y'] * 100).astype(np.int)
+        zs = (vertex['z'] * 100).astype(np.int)
+
+        min_x = xs.min()
+        min_y = ys.min()
+        min_z = zs.min()
+
+        min_overall = min([min_x, min_y, min_z])
+
+        if min_overall < 0:
+            xs = xs - min_overall
+            ys = ys - min_overall
+            zs = zs - min_overall
+
+        rs = vertex['red']
+        gs = vertex['green']
+        bs = vertex['blue']
+
+        image = np.zeros((xs.max() + 1, ys.max() + 1, zs.max() + 1, 3))
+        for x, y, z, r, g, b in zip(xs, ys, zs, rs, gs, bs):
+            image[x, y, z, 0] = r
+            image[x, y, z, 1] = g
+            image[x, y, z, 2] = b
+
         return image
 
     def load_mask(self, image_id):
@@ -420,10 +444,10 @@ def resize_image(image, min_dim=None, max_dim=None, min_scale=None, mode="square
     # Keep track of image dtype and return results in the same dtype
     image_dtype = image.dtype
     # Default window (y1, x1, y2, x2) and default scale == 1.
-    h, w = image.shape[:2]
-    window = (0, 0, h, w)
+    h, w, d = image.shape[:3]
+    window = (0, 0, h, w, d)
     scale = 1
-    padding = [(0, 0), (0, 0), (0, 0)]
+    padding = [(0, 0, 0), (0, 0, 0), (0, 0, 0)]
     crop = None
 
     if mode == "none":
@@ -432,19 +456,19 @@ def resize_image(image, min_dim=None, max_dim=None, min_scale=None, mode="square
     # Scale?
     if min_dim:
         # Scale up but not down
-        scale = max(1, min_dim / min(h, w))
+        scale = max(1, min_dim / min(h, w, d))
     if min_scale and scale < min_scale:
         scale = min_scale
 
     # Does it exceed max dim?
     if max_dim and mode == "square":
-        image_max = max(h, w)
+        image_max = max(h, w, d)
         if round(image_max * scale) > max_dim:
             scale = max_dim / image_max
 
     # Resize image using bilinear interpolation
     if scale != 1:
-        image = resize(image, (round(h * scale), round(w * scale)),
+        image = resize(image, (round(h * scale), round(w * scale), round(d * scale)),
                        preserve_range=True)
 
     # Need padding or cropping?
@@ -583,8 +607,8 @@ def unmold_mask(mask, bbox, image_shape):
 def generate_anchors(scales, ratios, shape, feature_stride, anchor_stride):
     """
     scales: 1D array of anchor sizes in pixels. Example: [32, 64, 128]
-    ratios: 1D array of anchor ratios of width/height. Example: [0.5, 1, 2]
-    shape: [height, width] spatial shape of the feature map over which
+    ratios: 2D array of anchor ratios of [width/height, depth/width]. Example: [[0.5, 1], [1, 1], [1, 2]]
+    shape: [depth, height, width] spatial shape of the feature map over which
             to generate anchors.
     feature_stride: Stride of the feature map relative to the image in pixels.
     anchor_stride: Stride of anchors on the feature map. For example, if the
@@ -596,22 +620,25 @@ def generate_anchors(scales, ratios, shape, feature_stride, anchor_stride):
     ratios = ratios.flatten()
 
     # Enumerate heights and widths from scales and ratios
-    heights = scales / np.sqrt(ratios)
-    widths = scales * np.sqrt(ratios)
+    heights = scales / [ratio['width-height'] for ratio in ratios]
+    widths = scales
+    depths = scales * [ratio['depth-width'] for ratio in ratios]
 
     # Enumerate shifts in feature space
-    shifts_y = np.arange(0, shape[0], anchor_stride) * feature_stride
-    shifts_x = np.arange(0, shape[1], anchor_stride) * feature_stride
-    shifts_x, shifts_y = np.meshgrid(shifts_x, shifts_y)
+    shifts_z = np.arange(0, shape[0], anchor_stride) * feature_stride
+    shifts_y = np.arange(0, shape[1], anchor_stride) * feature_stride
+    shifts_x = np.arange(0, shape[2], anchor_stride) * feature_stride
+    shifts_x, shifts_y, shifts_z = np.meshgrid(shifts_x, shifts_y, shifts_z)
 
     # Enumerate combinations of shifts, widths, and heights
     box_widths, box_centers_x = np.meshgrid(widths, shifts_x)
     box_heights, box_centers_y = np.meshgrid(heights, shifts_y)
+    box_depths, box_centers_z = np.meshgrid(depths, shifts_z)
 
     # Reshape to get a list of (y, x) and a list of (h, w)
     box_centers = np.stack(
-        [box_centers_y, box_centers_x], axis=2).reshape([-1, 2])
-    box_sizes = np.stack([box_heights, box_widths], axis=2).reshape([-1, 2])
+        [box_centers_z, box_centers_y, box_centers_x], axis=2).reshape([-1, 3])
+    box_sizes = np.stack([box_depths, box_heights, box_widths], axis=2).reshape([-1, 3])
 
     # Convert to corner coordinates (y1, x1, y2, x2)
     boxes = np.concatenate([box_centers - 0.5 * box_sizes,
@@ -859,11 +886,11 @@ def norm_boxes(boxes, shape):
     coordinates it's inside the box.
 
     Returns:
-        [N, (y1, x1, y2, x2)] in normalized coordinates
+        [N, (z1, y1, x1, z2, y2, x2)] in normalized coordinates
     """
-    h, w = shape
-    scale = np.array([h - 1, w - 1, h - 1, w - 1])
-    shift = np.array([0, 0, 1, 1])
+    d, h, w = shape
+    scale = np.array([d - 1, h - 1, w - 1, d - 1, h - 1, w - 1])
+    shift = np.array([0, 0, 0, 1, 1, 1])
     return np.divide((boxes - shift), scale).astype(np.float32)
 
 
