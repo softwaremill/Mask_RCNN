@@ -184,27 +184,33 @@ def apply_box_deltas(boxes, deltas):
 
 def box_refinement_graph(box, gt_box):
     """Compute refinement needed to transform box to gt_box.
-    box and gt_box are [N, (y1, x1, y2, x2)]
+    box and gt_box are [N, (z1, y1, x1, z2, y2, x2)]
     """
     box = tf.cast(box, tf.float32)
     gt_box = tf.cast(gt_box, tf.float32)
 
-    height = box[:, 2] - box[:, 0]
-    width = box[:, 3] - box[:, 1]
-    center_y = box[:, 0] + 0.5 * height
-    center_x = box[:, 1] + 0.5 * width
+    depth = box[:, 3] - box[:, 0]
+    height = box[:, 4] - box[:, 1]
+    width = box[:, 5] - box[:, 2]
+    center_z = box[:, 0] + 0.5 * depth
+    center_y = box[:, 1] + 0.5 * height
+    center_x = box[:, 2] + 0.5 * width
 
-    gt_height = gt_box[:, 2] - gt_box[:, 0]
-    gt_width = gt_box[:, 3] - gt_box[:, 1]
-    gt_center_y = gt_box[:, 0] + 0.5 * gt_height
-    gt_center_x = gt_box[:, 1] + 0.5 * gt_width
+    gt_depth = gt_box[:, 3] - gt_box[:, 0]
+    gt_height = gt_box[:, 4] - gt_box[:, 1]
+    gt_width = gt_box[:, 5] - gt_box[:, 2]
+    gt_center_z = gt_box[:, 0] + 0.5 * gt_depth
+    gt_center_y = gt_box[:, 1] + 0.5 * gt_height
+    gt_center_x = gt_box[:, 2] + 0.5 * gt_width
 
+    dz = (gt_center_z - center_z) / depth
     dy = (gt_center_y - center_y) / height
     dx = (gt_center_x - center_x) / width
+    dd = tf.log(gt_depth / depth)
     dh = tf.log(gt_height / height)
     dw = tf.log(gt_width / width)
 
-    result = tf.stack([dy, dx, dh, dw], axis=1)
+    result = tf.stack([dz, dy, dx, dd, dh, dw], axis=1)
     return result
 
 
