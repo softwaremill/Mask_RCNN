@@ -555,7 +555,7 @@ def overlaps_graph(boxes1, boxes2):
     # TF doesn't have an equivalent to np.repeat() so simulate it
     # using tf.tile() and tf.reshape.
     b1 = tf.reshape(tf.tile(tf.expand_dims(boxes1, 1),
-                            [1, 1, tf.shape(boxes2)[0]]), [-1, 4])
+                            [1, 1, tf.shape(boxes2)[0]]), [-1, 6])
     b2 = tf.tile(boxes2, [tf.shape(boxes1)[0], 1])
     # 2. Compute intersections
     b1_z1, b1_y1, b1_x1, b1_z2, b1_y2, b1_x2 = tf.split(b1, 6, axis=1)
@@ -608,10 +608,14 @@ def detection_targets_graph(proposals, gt_class_ids, gt_boxes, gt_masks, config)
 
     # Remove zero padding
     proposals, _ = trim_zeros_graph(proposals, name="trim_proposals")
+    print("GT boxes:", gt_boxes)
     gt_boxes, non_zeros = trim_zeros_graph(gt_boxes, name="trim_gt_boxes")
+    print("GT boxes:", gt_boxes)
+    print("Non zeros:", non_zeros)
     gt_class_ids = tf.boolean_mask(gt_class_ids, non_zeros,
                                    name="trim_gt_class_ids")
-    gt_masks = tf.gather(gt_masks, tf.where(non_zeros)[:, 0], axis=2,
+    print("GT masks:", gt_masks)
+    gt_masks = tf.gather(gt_masks, tf.where(non_zeros)[:, 0], axis=3,
                          name="trim_gt_masks")
 
     # Handle COCO crowds
@@ -622,7 +626,9 @@ def detection_targets_graph(proposals, gt_class_ids, gt_boxes, gt_masks, config)
     crowd_boxes = tf.gather(gt_boxes, crowd_ix)
     gt_class_ids = tf.gather(gt_class_ids, non_crowd_ix)
     gt_boxes = tf.gather(gt_boxes, non_crowd_ix)
-    gt_masks = tf.gather(gt_masks, non_crowd_ix, axis=2)
+    print("GT masks:", gt_masks)
+    print("Non crowd ix:", non_crowd_ix)
+    gt_masks = tf.gather(gt_masks, non_crowd_ix, axis=3)
 
     # Compute overlaps matrix [proposals, gt_boxes]
     overlaps = overlaps_graph(proposals, gt_boxes)
@@ -669,8 +675,9 @@ def detection_targets_graph(proposals, gt_class_ids, gt_boxes, gt_masks, config)
     deltas /= config.BBOX_STD_DEV
 
     # Assign positive ROIs to GT masks
-    # Permute masks to [N, height, width, 1]
-    transposed_masks = tf.expand_dims(tf.transpose(gt_masks, [2, 0, 1]), -1)
+    # Permute masks to [N, depth, height, width, 1]
+    print("GT masks:", gt_masks)
+    transposed_masks = tf.expand_dims(tf.transpose(gt_masks, [3, 0, 1, 2]), -1)
     # Pick the right mask for each ROI
     roi_masks = tf.gather(transposed_masks, roi_gt_box_assignment)
 
@@ -2002,7 +2009,8 @@ class MaskRCNN():
             if config.USE_MINI_MASK:
                 input_gt_masks = KL.Input(
                     shape=[config.MINI_MASK_SHAPE[0],
-                           config.MINI_MASK_SHAPE[1], None],
+                           config.MINI_MASK_SHAPE[1],
+                           config.MINI_MASK_SHAPE[2], None],
                     name="input_gt_masks", dtype=bool)
             else:
                 input_gt_masks = KL.Input(
@@ -2943,7 +2951,7 @@ def trim_zeros_graph(boxes, name='trim_zeros'):
     """Often boxes are represented with matrices of shape [N, 4] and
     are padded with zeros. This removes zero boxes.
 
-    boxes: [N, 4] matrix of boxes.
+    boxes: [N, 6] matrix of boxes.
     non_zeros: [N] a 1D boolean mask identifying the rows to keep
     """
     non_zeros = tf.cast(tf.reduce_sum(tf.abs(boxes), axis=1), tf.bool)
