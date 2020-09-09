@@ -323,11 +323,93 @@ class ProposalLayer(KE.Layer):
         # According to Xinlei Chen's paper, this reduces detection accuracy
         # for small objects, so we're skipping it.
 
+        def iou(a, b):
+            zA = tf.maximum(a[0], b[0])
+            yA = tf.maximum(a[1], b[1])
+            xA = tf.maximum(a[2], b[2])
+            zB = tf.minimum(a[3], b[3])
+            yB = tf.minimum(a[4], b[4])
+            xB = tf.minimum(a[5], b[5])
+
+            interArea = tf.maximum(0.0, xB - xA) * tf.maximum(0.0, yB - yA) * tf.maximum(0.0, zB - zA)
+
+            boxAArea = (a[3] - a[0]) * (a[4] - a[1]) * (a[5] - a[2])
+            boxBArea = (b[3] - b[0]) * (b[4] - b[1]) * (b[5] - b[2])
+
+            return interArea / (boxAArea + boxBArea - interArea)
+
+        def iou_evaluation(n, boxes, scores, highest_score_box, index, removed_boxes):
+            iou_value = iou(highest_score_box, boxes[index])
+
+            (boxes, scores, index, removed_boxes) = tf.cond(
+                tf.greater(iou_value, self.nms_threshold),
+                lambda: (
+                    tf.concat([boxes[:index], boxes[index + 1:]], 0),
+                    tf.concat([scores[:index], scores[index + 1:]], 0),
+                    index,
+                    tf.add(removed_boxes, 1)
+                ),
+                lambda: (boxes, scores, tf.add(index, 1), removed_boxes)
+            )
+            return [tf.add(n, 1), boxes, scores, highest_score_box, index, removed_boxes]
+
+        def nms_step(n, boxes, scores, proposals):
+            sorted_args = tf.argsort(scores, direction='DESCENDING')
+            highest_score_arg = sorted_args[0]
+            highest_score_box = boxes[highest_score_arg]
+            number_of_processed = tf.constant(0)
+            index = tf.constant(0)
+            boxes = tf.concat([boxes[:highest_score_arg], boxes[highest_score_arg + 1:]], 0)
+            scores = tf.concat([scores[:highest_score_arg], scores[highest_score_arg + 1:]], 0)
+            boxes_size = tf.shape(boxes)[0]
+            removed_boxes = tf.constant(0)
+
+            (n_internal, boxes, scores, highest_score_box, index, removed_boxes) = tf.while_loop(
+                lambda n, b, s, h, i, r: n < boxes_size,
+                lambda n, b, s, h, i, r: iou_evaluation(n, b, s, h, i, r),
+                [
+                    number_of_processed,
+                    boxes,
+                    scores,
+                    highest_score_box,
+                    index,
+                    removed_boxes
+                ],
+                shape_invariants=[
+                    number_of_processed.get_shape(),
+                    tf.TensorShape([None, 6]),
+                    tf.TensorShape([None]),
+                    tf.TensorShape([None]),
+                    index.get_shape(),
+                    removed_boxes.get_shape()
+                ]
+            )
+            return [
+                tf.add(tf.add(n, 1), removed_boxes),
+                boxes,
+                scores,
+                tf.concat([proposals, [highest_score_arg]], 0)
+            ]
+
         # Non-max suppression
         def nms(boxes, scores):
-            indices = tf.image.non_max_suppression(
-                boxes, scores, self.proposal_count,
-                self.nms_threshold, name="rpn_non_max_suppression")
+            number_of_processed = tf.constant(0)
+            boxes_size = tf.shape(boxes)[0]
+
+            indices = tf.zeros([0], tf.int32)
+
+            number_of_processed, boxes, scores, proposals = tf.while_loop(
+                lambda n, b, s, p: tf.math.logical_and(n < boxes_size, tf.shape(p)[0] < self.proposal_count),
+                lambda n, b, s, p: nms_step(n, b, s, p),
+                [number_of_processed, boxes, scores, indices],
+                shape_invariants=[
+                    number_of_processed.get_shape(),
+                    tf.TensorShape([None, 6]),
+                    tf.TensorShape([None]),
+                    tf.TensorShape([None]),
+                ]
+            )
+
             proposals = tf.gather(boxes, indices)
             # Pad if needed
             padding = tf.maximum(self.proposal_count - tf.shape(proposals)[0], 0)
