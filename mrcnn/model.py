@@ -577,6 +577,61 @@ def overlaps_graph(boxes1, boxes2):
     return overlaps
 
 
+def crop_and_resize(
+    image,
+    boxes,
+    box_indices,
+    crop_size
+):
+    _, image_depth, image_height, image_width, _ = image.shape
+    batch_size = tf.shape(image)[0]
+    image_depth = tf.cast(image_depth, tf.int32)
+    image_height = tf.cast(image_height, tf.int32)
+    image_width = tf.cast(image_width, tf.int32)
+    images_by_indices = tf.gather(image, box_indices)
+    boxes_unnormalized = tf.cast(
+        tf.math.multiply(
+            boxes,
+            [
+                image_depth - 1,
+                image_height - 1,
+                image_width - 1,
+                image_depth - 1,
+                image_height - 1,
+                image_width - 1
+            ]
+        ),
+        tf.int32
+    )
+
+    def crop_step(i, result):
+        to_concat = images_by_indices[i][boxes_unnormalized[i][0]:boxes_unnormalized[i][3],
+                    boxes_unnormalized[i][1]:boxes_unnormalized[i][4],
+                    boxes_unnormalized[i][2]:boxes_unnormalized[i][5], :]
+        resized_xy = tf.image.resize_bilinear(to_concat, crop_size[1:])
+        transposed = tf.transpose(resized_xy, (1, 0, 2, 3))
+        resized_xyz = tf.image.resize_bilinear(transposed, crop_size[:2])
+        original_shape_resized = tf.transpose(resized_xyz, (1, 0, 2, 3))
+        return [tf.add(i, 1), tf.concat([result, [original_shape_resized]], 0)]
+
+    result = tf.zeros([0, crop_size[0], crop_size[1], crop_size[2], 1], tf.float32)
+
+    print(result.shape)
+    i = tf.constant(0)
+
+    [i, result] = tf.while_loop(
+        lambda i, _: i < batch_size,
+        lambda i, result: crop_step(i, result),
+        [i, result],
+        shape_invariants = [
+            i.get_shape(),
+            tf.TensorShape([None, crop_size[0], crop_size[1], crop_size[2], 1])
+        ]
+    )
+
+    return result[1:]
+
+
 def detection_targets_graph(proposals, gt_class_ids, gt_boxes, gt_masks, config):
     """Generates detection targets for one image. Subsamples proposals and
     generates target class IDs, bounding box deltas, and masks for each.
@@ -699,11 +754,16 @@ def detection_targets_graph(proposals, gt_class_ids, gt_boxes, gt_masks, config)
         x2 = (x2 - gt_x1) / gt_w
         boxes = tf.concat([z1, y1, x1, z2, y2, x2], 1)
     box_ids = tf.range(0, tf.shape(roi_masks)[0])
-    masks = tf.image.crop_and_resize(tf.cast(roi_masks, tf.float32), boxes,
-                                     box_ids,
-                                     config.MASK_SHAPE)
+
+    masks = crop_and_resize(
+        tf.cast(roi_masks, tf.float32),
+        boxes,
+        box_ids,
+        config.MASK_SHAPE
+    )
+
     # Remove the extra dimension from masks.
-    masks = tf.squeeze(masks, axis=3)
+    masks = tf.squeeze(masks, axis=4)
 
     # Threshold mask pixels at 0.5 to have GT masks be 0 or 1 to use with
     # binary cross entropy loss.
